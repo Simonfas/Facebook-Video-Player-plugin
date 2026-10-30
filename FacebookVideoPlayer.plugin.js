@@ -1,912 +1,344 @@
 /**
  * @name FacebookVideoPlayer
  * @author Simonfas
- * @description Plays Facebook videos and Reels inside Discord, supports share links, and hides native Facebook previews.
- * @version 1.4.1
+ * @description Plays Facebook videos and Reels in Discord, preserving aspect ratio when a playable video source is available.
+ * @version 1.6.0
  */
-
 module.exports = class FacebookVideoPlayer {
     constructor() {
         this.styleId = "FacebookVideoPlayer-Style";
+        this.enabled = false;
         this.observer = null;
         this.raf = null;
-        this.enabled = false;
         this.pending = new Map();
-        this.cache = new Map();
+        this.resolved = new Map();
         this.saved = {};
     }
 
     start() {
         this.enabled = true;
-
-        this.saved =
-            BdApi.Data.load(
-                "FacebookVideoPlayer",
-                "resolvedLinks"
-            ) || {};
-
+        this.saved = BdApi.Data.load("FacebookVideoPlayer", "resolvedLinks") || {};
         BdApi.DOM.addStyle(this.styleId, `
-            .sf-fb-native-hidden {
-                display: none !important;
-            }
-
-            .sf-fb-card {
-                box-sizing: border-box;
-                width: min(560px, 100%);
-                max-width: 100%;
-                margin: 8px 0;
-                overflow: hidden;
-                border: 1px solid var(
-                    --border-subtle,
-                    rgba(255,255,255,.12)
-                );
-                border-radius: 10px;
-                background: var(
-                    --background-secondary,
-                    #242428
-                );
-            }
-
-            .sf-fb-card.sf-fb-reel {
-                width: min(390px, 100%);
-            }
-
-            .sf-fb-head {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: 12px;
-                padding: 10px 12px;
-                font-size: 13px;
-                font-weight: 600;
-                color: var(--text-normal, #eee);
-            }
-
-            .sf-fb-head a {
-                font-size: 12px;
-                font-weight: 400;
-                color: var(--text-link, #79adff);
-                text-decoration: none;
-            }
-
-            .sf-fb-head a:hover {
-                text-decoration: underline;
-            }
-
-            .sf-fb-frame-wrapper {
-                position: relative;
-                width: 100%;
-                aspect-ratio: 16 / 9;
-                overflow: hidden;
-                background: #111;
-            }
-
-            .sf-fb-frame-wrapper iframe {
-                display: block;
-                width: 100%;
-                height: 100%;
-                border: none;
-                background: #111;
-            }
-
-            /*
-             * Facebook Reel crop.
-             *
-             * Facebook's embed sometimes places a large
-             * empty area beneath the actual Reel.
-             *
-             * Keep the iframe at its original 9:16
-             * dimensions, but crop its visible area
-             * to prevent the empty bottom section.
-             */
-
-            .sf-fb-card.sf-fb-reel
-            .sf-fb-frame-wrapper {
-                aspect-ratio: 3 / 4;
-                overflow: hidden;
-            }
-
-            .sf-fb-card.sf-fb-reel
-            .sf-fb-frame-wrapper iframe {
-                width: 100%;
-                height: auto;
-                aspect-ratio: 9 / 16;
-                border: none;
-                display: block;
-            }
-
-            .sf-fb-message {
-                padding: 6px 12px 12px;
-                font-size: 12px;
-                line-height: 1.5;
-                color: var(--text-muted, #aaa);
-            }
-
-            .sf-fb-buttons {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 8px;
-                padding: 0 12px 12px;
-            }
-
-            .sf-fb-buttons button {
-                padding: 7px 10px;
-                border: 0;
-                border-radius: 5px;
-                background: var(
-                    --button-secondary-background,
-                    #45454d
-                );
-                color: var(--text-normal, #fff);
-                cursor: pointer;
-                font-size: 12px;
-                transition: filter .15s;
-            }
-
-            .sf-fb-buttons button:hover {
-                filter: brightness(1.15);
-            }
-
-            .sf-fb-input {
-                display: block;
-                box-sizing: border-box;
-                width: calc(100% - 24px);
-                margin: 0 12px 8px;
-                padding: 8px;
-                border: 1px solid var(
-                    --border-subtle,
-                    rgba(255,255,255,.18)
-                );
-                border-radius: 5px;
-                background: var(
-                    --input-background,
-                    #151519
-                );
-                color: var(--text-normal, #fff);
-            }
+            .sf-fb-native-hidden { display: none !important; }
+            .sf-fb-card { box-sizing:border-box; width:min(560px,100%); margin:8px 0;
+                overflow:hidden; border:1px solid var(--border-subtle,rgba(255,255,255,.13));
+                border-radius:10px; background:var(--background-secondary,#242428); }
+            .sf-fb-card.sf-fb-reel { width:min(390px,100%); }
+            .sf-fb-head { display:flex; align-items:center; gap:10px; padding:9px 12px;
+                color:var(--text-normal,#eee); font-size:13px; }
+            .sf-fb-head strong { margin-right:auto; }
+            .sf-fb-head a { color:var(--text-link,#79adff); text-decoration:none; font-size:12px; }
+            .sf-fb-media { position:relative; width:100%; overflow:hidden; background:#000; }
+            .sf-fb-media video { display:block; width:100%; max-height:75vh; height:auto;
+                object-fit:contain; background:#000; }
+            .sf-fb-media iframe { display:block; width:100%; border:0; background:#000; }
+            .sf-fb-message { padding:12px; color:var(--text-muted,#aaa); font-size:12px; }
+            .sf-fb-actions { display:flex; gap:8px; padding:0 12px 12px; flex-wrap:wrap; }
+            .sf-fb-actions button { cursor:pointer; padding:7px 10px; border:0; border-radius:5px;
+                color:var(--text-normal,#fff); background:var(--button-secondary-background,#45454d); }
+            .sf-fb-input { box-sizing:border-box; width:calc(100% - 24px); margin:0 12px 8px;
+                padding:8px; color:var(--text-normal,#fff); background:var(--input-background,#151519);
+                border:1px solid var(--border-subtle,rgba(255,255,255,.18)); border-radius:5px; }
         `);
-
         this.scan();
-
-        this.observer = new MutationObserver(
-            () => this.scheduleScan()
-        );
-
-        this.observer.observe(document.body, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            attributeFilter: ["href"]
-        });
+        this.observer = new MutationObserver(() => this.scheduleScan());
+        this.observer.observe(document.body, { childList:true, subtree:true });
     }
 
     stop() {
         this.enabled = false;
-
         this.observer?.disconnect();
         this.observer = null;
-
-        if (this.raf !== null) {
-            cancelAnimationFrame(this.raf);
-        }
-
+        if (this.raf !== null) cancelAnimationFrame(this.raf);
         this.raf = null;
-
-        document.querySelectorAll(".sf-fb-card")
-            .forEach(element => element.remove());
-
-        document.querySelectorAll(
-            ".sf-fb-native-hidden"
-        ).forEach(element => {
-            element.classList.remove(
-                "sf-fb-native-hidden"
-            );
-        });
-
+        document.querySelectorAll(".sf-fb-card").forEach(x => x.remove());
+        document.querySelectorAll(".sf-fb-native-hidden").forEach(x => x.classList.remove("sf-fb-native-hidden"));
         BdApi.DOM.removeStyle(this.styleId);
-
         this.pending.clear();
-        this.cache.clear();
+        this.resolved.clear();
     }
 
     scheduleScan() {
-        if (!this.enabled || this.raf !== null) {
-            return;
-        }
-
-        this.raf = requestAnimationFrame(() => {
-            this.raf = null;
-            this.scan();
-        });
+        if (!this.enabled || this.raf !== null) return;
+        this.raf = requestAnimationFrame(() => { this.raf = null; this.scan(); });
     }
 
     parse(input) {
-        let url;
+        let u;
+        try { u = new URL(input); } catch { return null; }
+        const host = u.hostname.toLowerCase();
+        if (!['https:','http:'].includes(u.protocol) || u.username || u.password ||
+            !(host === 'facebook.com' || host.endsWith('.facebook.com') || host === 'fb.watch')) return null;
+        const p = u.pathname;
+        const share = host === 'fb.watch' || /^\/share\/(?:r|v)\/[^/]+/i.test(p);
+        const reel = p.match(/^\/reels?\/(\d+)\/?$/i);
+        const watch = /^\/(?:watch\/?|video\.php)$/i.test(p) && /^\d+$/.test(u.searchParams.get('v') || '');
+        const video = /^\/videos\/(?:[^/]+\/)?\d+\/?$/i.test(p);
+        if (!share && !reel && !watch && !video) return null;
+        if (share) { u.protocol='https:'; u.hash=''; return {url:u.toString(),share:true,reel:/^\/share\/r\//i.test(p)}; }
+        if (reel) return {url:`https://www.facebook.com/reel/${reel[1]}/`,share:false,reel:true};
+        if (watch) return {url:`https://www.facebook.com/watch/?v=${u.searchParams.get('v')}`,share:false,reel:false};
+        return {url:`https://www.facebook.com${p}`,share:false,reel:false};
+    }
 
+    direct(url) { const p = this.parse(url); return p && !p.share ? p.url : null; }
+
+    decode(str) {
+        if (typeof str !== 'string') return '';
+        return str.replace(/\\u0026/gi,'&').replace(/\\u002f/gi,'/')
+            .replace(/\\\//g,'/').replace(/&amp;/gi,'&').replace(/&quot;/gi,'"')
+            .replace(/&#39;/gi,"'");
+    }
+
+    extractPage(html, base) {
+        const candidates = [];
+        const videos = [];
         try {
-            url = new URL(input);
-        } catch {
-            return null;
-        }
-
-        if (
-            !["https:", "http:"].includes(url.protocol) ||
-            url.username ||
-            url.password
-        ) {
-            return null;
-        }
-
-        const host = url.hostname.toLowerCase();
-
-        const validHost =
-            host === "facebook.com" ||
-            host.endsWith(".facebook.com") ||
-            host === "fb.watch" ||
-            host === "www.fb.watch";
-
-        if (!validHost) {
-            return null;
-        }
-
-        const path = url.pathname;
-
-        const share =
-            host === "fb.watch" ||
-            host === "www.fb.watch" ||
-            /^\/share\/(?:v|r)\/[^/]+/i.test(path);
-
-        const reel =
-            /^\/reels?\/(\d+)\/?$/i.exec(path);
-
-        const watch =
-            /^\/(?:watch\/?|video\.php)$/i.test(path) &&
-            /^\d+$/.test(
-                url.searchParams.get("v") || ""
-            );
-
-        const video =
-            /\/videos\/(?:[^/]+\/)?\d+\/?$/i.test(path);
-
-        if (!share && !reel && !watch && !video) {
-            return null;
-        }
-
-        if (share) {
-            url.protocol = "https:";
-            url.hash = "";
-
-            return {
-                url: url.toString(),
-                share: true,
-                reel: /^\/share\/r\//i.test(path)
-            };
-        }
-
-        if (reel) {
-            return {
-                url:
-                    "https://www.facebook.com/reel/" +
-                    reel[1] + "/",
-                share: false,
-                reel: true
-            };
-        }
-
-        if (watch) {
-            return {
-                url:
-                    "https://www.facebook.com/watch/?v=" +
-                    url.searchParams.get("v"),
-                share: false,
-                reel: false
-            };
-        }
-
-        return {
-            url: "https://www.facebook.com" + path,
-            share: false,
-            reel: false
-        };
-    }
-
-    direct(input) {
-        const parsed = this.parse(input);
-
-        return parsed && !parsed.share
-            ? parsed.url
-            : null;
-    }
-
-    decode(value) {
-        if (typeof value !== "string") {
-            return "";
-        }
-
-        return value
-            .replace(/&amp;/g, "&")
-            .replace(/&#38;/g, "&")
-            .replace(/\\u0026/gi, "&")
-            .replace(/\\u002f/gi, "/")
-            .replace(/\\\//g, "/")
-            .replace(/&quot;/g, '"');
-    }
-
-    extract(html, base) {
-        if (!html || typeof html !== "string") {
-            return null;
-        }
-
-        const found = [];
-
-        try {
-            const doc = new DOMParser().parseFromString(
-                html,
-                "text/html"
-            );
-
-            for (const selector of [
-                'meta[property="og:url"]',
-                'meta[name="twitter:url"]',
-                'link[rel="canonical"]'
-            ]) {
-                const element =
-                    doc.querySelector(selector);
-
-                if (element) {
-                    found.push(
-                        element.getAttribute("content") ||
-                        element.getAttribute("href")
-                    );
-                }
+            const doc = new DOMParser().parseFromString(html,'text/html');
+            for (const s of ['meta[property="og:url"]','meta[name="twitter:url"]','link[rel="canonical"]']) {
+                const e = doc.querySelector(s);
+                if (e) candidates.push(e.getAttribute('content') || e.getAttribute('href'));
             }
-
-            const refresh = doc.querySelector(
-                'meta[http-equiv="refresh"]'
-            );
-
-            const match = refresh
-                ?.getAttribute("content")
-                ?.match(/url\s*=\s*['"]?([^'";]+)/i);
-
-            if (match) {
-                found.push(match[1]);
+            for (const s of ['meta[property="og:video:secure_url"]','meta[property="og:video"]',
+                'meta[property="og:video:url"]','meta[name="twitter:player:stream"]']) {
+                const e = doc.querySelector(s);
+                if (e) videos.push(e.getAttribute('content'));
             }
+            const refresh = doc.querySelector('meta[http-equiv="refresh"]')?.getAttribute('content');
+            const match = refresh?.match(/url\s*=\s*['"]?([^'";]+)/i);
+            if (match) candidates.push(match[1]);
         } catch {}
-
-        const pattern =
-            /https?(?:\\\/|\/){2}(?:www\.|m\.|web\.)?facebook\.com(?:\\\/|\/)(?:reel\/\d+|watch\/\?v=\d+|[^\s"'<>\\]{1,120}\/videos\/\d+)/gi;
-
-        for (const match of html.matchAll(pattern)) {
-            found.push(match[0]);
+        const normalized = this.decode(html);
+        const linkMatches = normalized.match(/https?:\/\/(?:www\.|m\.|web\.)?facebook\.com\/(?:reels?\/\d+|watch\/?\?v=\d+|[^\s"'<>]{1,120}\/videos\/\d+)/gi) || [];
+        candidates.push(...linkMatches);
+        for (const regex of [
+            /"(?:browser_native_hd_url|browser_native_sd_url|playable_url_quality_hd|playable_url|hd_src|sd_src)"\s*:\s*"([^"\n]+)"/gi,
+            /"(?:video_url|videoUrl)"\s*:\s*"([^"\n]+)"/gi
+        ]) {
+            for (const m of html.matchAll(regex)) videos.push(m[1]);
         }
-
-        for (const raw of found) {
+        let direct = null;
+        for (const raw of candidates) {
+            try { direct = this.direct(new URL(this.decode(raw),base).toString()); if (direct) break; } catch {}
+        }
+        let source = null;
+        for (const raw of videos) {
             try {
-                const url = new URL(
-                    this.decode(raw),
-                    base
-                ).toString();
-
-                const direct = this.direct(url);
-
-                if (direct) {
-                    return direct;
+                const value = this.decode(raw);
+                const u = new URL(value,base);
+                const host = u.hostname.toLowerCase();
+                if (u.protocol === 'https:' &&
+                    (host === 'facebook.com' || host.endsWith('.facebook.com') ||
+                     host === 'fbcdn.net' || host.endsWith('.fbcdn.net'))) {
+                    source = u.toString(); break;
                 }
             } catch {}
         }
-
-        return null;
+        return {direct,source};
     }
 
-    async resolve(link, retry = false) {
-        if (
-            !retry &&
-            this.saved[link] &&
-            this.direct(this.saved[link])
-        ) {
-            return this.direct(this.saved[link]);
-        }
-
-        if (!retry && this.cache.has(link)) {
-            return this.cache.get(link);
-        }
-
-        if (this.pending.has(link)) {
-            return this.pending.get(link);
-        }
-
-        const task = this.resolveNetwork(link)
-            .then(result => {
-                if (result) {
-                    this.cache.set(link, result);
-                }
-
-                return result;
-            })
-            .catch(error => {
-                console.warn(
-                    "[FacebookVideoPlayer] Could not resolve:",
-                    error
-                );
-
-                return null;
-            })
-            .finally(() => {
-                this.pending.delete(link);
-            });
-
-        this.pending.set(link, task);
-
-        return task;
-    }
-
-    async resolveNetwork(link) {
-        if (!BdApi.Net?.fetch) {
+    async fetchInfo(link, retry=false) {
+        if (!retry && this.resolved.has(link)) return this.resolved.get(link);
+        if (this.pending.has(link)) return this.pending.get(link);
+        const job = this.fetchNetwork(link).then(info => {
+            if (info) this.resolved.set(link,info);
+            return info;
+        }).catch(e => {
+            console.debug('[FacebookVideoPlayer] Fetch failed:',e);
             return null;
-        }
+        }).finally(() => this.pending.delete(link));
+        this.pending.set(link,job);
+        return job;
+    }
 
-        const urls = [link];
+    async fetchNetwork(link) {
+        if (!BdApi.Net?.fetch) return null;
         const initial = new URL(link);
-
-        if (
-            initial.hostname !== "fb.watch" &&
-            initial.hostname !== "www.fb.watch"
-        ) {
-            for (const host of [
-                "www.facebook.com",
-                "m.facebook.com",
-                "web.facebook.com"
-            ]) {
-                const other = new URL(link);
-                other.hostname = host;
-
-                if (!urls.includes(other.toString())) {
-                    urls.push(other.toString());
-                }
+        const urls = [link];
+        if (!initial.hostname.endsWith('fb.watch')) {
+            for (const host of ['www.facebook.com','m.facebook.com','web.facebook.com']) {
+                const other = new URL(link); other.hostname=host;
+                if (!urls.includes(other.toString())) urls.push(other.toString());
             }
         }
-
+        let found = {direct:null,source:null};
         for (const target of urls) {
-            if (!this.enabled) {
-                return null;
-            }
-
+            if (!this.enabled) break;
             try {
-                const response = await BdApi.Net.fetch(
-                    target,
-                    {
-                        method: "GET",
-                        redirect: "follow",
-                        timeout: 9000
-                    }
-                );
-
-                const redirected = this.direct(
-                    response.url || ""
-                );
-
-                if (redirected) {
-                    return redirected;
-                }
-
-                const found = this.extract(
-                    await response.text(),
-                    response.url || target
-                );
-
-                if (found) {
-                    return found;
-                }
-            } catch (error) {
-                console.debug(
-                    "[FacebookVideoPlayer] Resolve failed:",
-                    target,
-                    error
-                );
-            }
+                const response = await BdApi.Net.fetch(target, {
+                    method:'GET',redirect:'follow',timeout:9000
+                });
+                const redirected = this.direct(response.url || '');
+                const page = this.extractPage(await response.text(), response.url || target);
+                found.direct ||= redirected || page.direct;
+                found.source ||= page.source;
+                if (found.source) break;
+            } catch (e) { console.debug('[FacebookVideoPlayer] Could not fetch',target,e); }
         }
-
-        return null;
+        return found;
     }
 
     scan() {
-        if (!this.enabled) {
-            return;
-        }
-
-        const links = document.querySelectorAll(
-            'a[href*="facebook.com/"], ' +
-            'a[href*="fb.watch/"]'
-        );
-
-        for (const anchor of links) {
-            if (anchor.closest(".sf-fb-card")) {
-                continue;
-            }
-
-            const content = anchor.closest(
-                '[id^="message-content-"], ' +
-                '[class*="messageContent_"]'
-            );
-
-            if (!content?.isConnected) {
-                continue;
-            }
-
-            const parsed = this.parse(anchor.href);
-
-            if (!parsed) {
-                continue;
-            }
-
+        if (!this.enabled) return;
+        for (const a of document.querySelectorAll('a[href*="facebook.com/"], a[href*="fb.watch/"]')) {
+            if (a.closest('.sf-fb-card')) continue;
+            const content = a.closest('[id^="message-content-"], [class*="messageContent_"]');
+            const parsed = this.parse(a.href);
+            if (!content?.isConnected || !parsed || !content.parentElement) continue;
             const parent = content.parentElement;
-
-            if (!parent) {
-                continue;
-            }
-
-            const existing = [
-                ...parent.querySelectorAll(".sf-fb-card")
-            ].some(card =>
-                card.dataset.link === parsed.url
-            );
-
-            if (existing) {
-                continue;
-            }
-
-            const card =
-                document.createElement("div");
-
-            card.className = "sf-fb-card";
+            if ([...parent.querySelectorAll('.sf-fb-card')].some(x => x.dataset.link === parsed.url)) continue;
+            const card = document.createElement('div');
+            card.className = 'sf-fb-card' + (parsed.reel ? ' sf-fb-reel' : '');
             card.dataset.link = parsed.url;
-
-            if (parsed.reel) {
-                card.classList.add("sf-fb-reel");
-            }
-
-            const header =
-                document.createElement("div");
-
-            header.className = "sf-fb-head";
-
-            const title =
-                document.createElement("span");
-
-            title.textContent = parsed.reel
-                ? "Facebook Reel"
-                : "Facebook video";
-
-            const open =
-                document.createElement("a");
-
-            open.href = parsed.url;
-            open.target = "_blank";
-            open.rel = "noopener noreferrer";
-            open.textContent = "Open on Facebook ↗";
-
-            header.append(title, open);
-            card.append(header);
-
-            content.insertAdjacentElement(
-                "afterend",
-                card
-            );
-
-            if (parsed.share) {
-                this.loadShare(card, parsed.url);
-            } else {
-                this.showPlayer(card, parsed.url);
-            }
+            const header = document.createElement('div'); header.className='sf-fb-head';
+            const title = document.createElement('strong'); title.textContent=parsed.reel?'Facebook Reel':'Facebook video';
+            const open = document.createElement('a');
+            open.href=parsed.url; open.target='_blank'; open.rel='noopener noreferrer';
+            open.textContent='Open on Facebook ↗';
+            header.append(title,open); card.append(header);
+            content.insertAdjacentElement('afterend',card);
+            this.load(card,parsed.url);
         }
-
         this.hideNativePreviews();
     }
 
     hideNativePreviews() {
-        const cards =
-            document.querySelectorAll(".sf-fb-card");
-
-        const activePreviews = new Set();
-
-        for (const card of cards) {
-            const message =
-                card.closest(
-                    '[id^="chat-messages-"]'
-                ) ||
-                card.closest(
-                    'li[id*="chat-messages-"]'
-                ) ||
-                card.closest(
-                    '[class*="messageListItem"]'
-                );
-
-            if (!message) {
-                continue;
-            }
-
-            const embeds = message.querySelectorAll(
-                '[class*="embedWrapper"], ' +
-                '[class*="embedFull"]'
-            );
-
-            for (const embed of embeds) {
-                if (embed.closest(".sf-fb-card")) {
-                    continue;
-                }
-
-                const urls = [
-                    ...embed.querySelectorAll("a[href]")
-                ];
-
-                const isFacebook = urls.some(anchor => {
-                    try {
-                        const host = new URL(
-                            anchor.href
-                        ).hostname.toLowerCase();
-
-                        return (
-                            host === "facebook.com" ||
-                            host.endsWith(".facebook.com") ||
-                            host === "fb.watch" ||
-                            host === "www.fb.watch"
-                        );
-                    } catch {
-                        return false;
-                    }
-                });
-
-                if (isFacebook) {
-                    activePreviews.add(embed);
-                }
+        const active = new Set();
+        for (const card of document.querySelectorAll('.sf-fb-card')) {
+            const msg = card.closest('[id^="chat-messages-"], li[id*="chat-messages-"], [class*="messageListItem"]');
+            if (!msg) continue;
+            for (const embed of msg.querySelectorAll('[class*="embedWrapper"], [class*="embedFull"]')) {
+                if (embed.closest('.sf-fb-card')) continue;
+                if ([...embed.querySelectorAll('a[href]')].some(a => this.parse(a.href))) active.add(embed);
             }
         }
-
-        for (const old of document.querySelectorAll(
-            ".sf-fb-native-hidden"
-        )) {
-            if (!activePreviews.has(old)) {
-                old.classList.remove(
-                    "sf-fb-native-hidden"
-                );
-            }
+        for (const el of document.querySelectorAll('.sf-fb-native-hidden')) {
+            if (!active.has(el)) el.classList.remove('sf-fb-native-hidden');
         }
-
-        for (const embed of activePreviews) {
-            embed.classList.add(
-                "sf-fb-native-hidden"
-            );
-        }
+        for (const el of active) el.classList.add('sf-fb-native-hidden');
     }
 
-    clear(card) {
-        card.querySelectorAll(
-            ".sf-fb-message, " +
-            ".sf-fb-buttons, " +
-            ".sf-fb-input, " +
-            ".sf-fb-frame-wrapper"
-        ).forEach(element => element.remove());
+    clear(card) { card.querySelectorAll('.sf-fb-media,.sf-fb-message,.sf-fb-actions,.sf-fb-input').forEach(e => e.remove()); }
+    note(card,msg) { this.clear(card); const e=document.createElement('div');e.className='sf-fb-message';e.textContent=msg;card.append(e); }
+    setLink(card,url) {
+        const parsed=this.parse(url);
+        if (!parsed) return;
+        card.classList.toggle('sf-fb-reel',parsed.reel);
+        card.querySelector('.sf-fb-head strong').textContent=parsed.reel?'Facebook Reel':'Facebook video';
+        card.querySelector('.sf-fb-head a').href=url;
     }
 
-    note(card, message) {
+    showVideo(card,url,source) {
+        if (!this.enabled || !card.isConnected) return;
+        this.clear(card);
+        const frame=document.createElement('div');frame.className='sf-fb-media';
+        const video=document.createElement('video');
+        video.controls=true; video.playsInline=true; video.preload='metadata';
+        video.setAttribute('controlsList','nodownload');
+        video.style.aspectRatio='9 / 16';
+        video.addEventListener('loadedmetadata',() => {
+            if (video.videoWidth && video.videoHeight) {
+                video.style.aspectRatio=`${video.videoWidth} / ${video.videoHeight}`;
+            }
+        });
+        video.addEventListener('error',() => {
+            if (card.isConnected && this.enabled) this.showEmbed(card,url);
+        },{once:true});
+        frame.append(video);card.append(frame);
+        video.src=source;
+    }
+
+    
+    showEmbed(card, url) {
+        if (!this.enabled || !card.isConnected) return;
+
         this.clear(card);
 
-        const element =
-            document.createElement("div");
+        const parsed = this.parse(url);
+        const isReel = Boolean(parsed?.reel);
+        const width = isReel ? 390 : 560;
+        const height = Math.round(width * 9 / 16);
 
-        element.className = "sf-fb-message";
-        element.textContent = message;
+        const frame = document.createElement("div");
+        frame.className = "sf-fb-media";
 
-        card.append(element);
-    }
+        frame.style.width = "100%";
+        frame.style.height = "auto";
+        frame.style.aspectRatio = "16 / 9";
+        frame.style.overflow = "hidden";
+        frame.style.background = "#000";
 
-    showPlayer(card, link) {
-        if (!this.enabled || !card.isConnected) {
-            return;
-        }
-
-        const videoUrl = this.direct(link);
-
-        if (!videoUrl) {
-            this.note(card, "Invalid video link.");
-            return;
-        }
-
-        const parsed = this.parse(videoUrl);
-
-        card.classList.toggle(
-            "sf-fb-reel",
-            Boolean(parsed.reel)
-        );
-
-        const title =
-            card.querySelector(".sf-fb-head span");
-
-        if (title) {
-            title.textContent = parsed.reel
-                ? "Facebook Reel"
-                : "Facebook video";
-        }
-
-        this.clear(card);
+        const iframe = document.createElement("iframe");
 
         const embed = new URL(
             "https://www.facebook.com/plugins/video.php"
         );
 
-        embed.searchParams.set(
-            "href",
-            videoUrl
-        );
-
-        embed.searchParams.set(
-            "show_text",
-            "false"
-        );
-
-        embed.searchParams.set(
-            "width",
-            parsed.reel ? "390" : "560"
-        );
-
-        const wrapper =
-            document.createElement("div");
-
-        wrapper.className =
-            "sf-fb-frame-wrapper";
-
-        const iframe =
-            document.createElement("iframe");
+        embed.searchParams.set("href", url);
+        embed.searchParams.set("show_text", "false");
+        embed.searchParams.set("width", String(width));
+        embed.searchParams.set("height", String(height));
 
         iframe.src = embed.toString();
-
-        iframe.title = parsed.reel
+        iframe.title = isReel
             ? "Facebook Reel"
-            : "Facebook video player";
+            : "Facebook video";
+
+        iframe.width = String(width);
+        iframe.height = String(height);
+        iframe.style.width = "100%";
+        iframe.style.height = "100%";
+        iframe.style.display = "block";
+        iframe.style.border = "0";
+        iframe.style.aspectRatio = "16 / 9";
 
         iframe.loading = "lazy";
-
         iframe.allow =
-            "autoplay; encrypted-media; " +
-            "picture-in-picture; web-share";
-
+            "autoplay; encrypted-media; picture-in-picture; web-share";
         iframe.allowFullscreen = true;
+        iframe.referrerPolicy = "strict-origin-when-cross-origin";
 
-        iframe.referrerPolicy =
-            "strict-origin-when-cross-origin";
-
-        wrapper.append(iframe);
-        card.append(wrapper);
+        frame.appendChild(iframe);
+        card.appendChild(frame);
     }
 
-    showFallback(card, share) {
-        if (!this.enabled || !card.isConnected) {
-            return;
-        }
-
-        this.note(
-            card,
-            "Facebook did not provide a direct video URL. " +
-            "Try again or enter a direct link."
-        );
-
-        const buttons =
-            document.createElement("div");
-
-        buttons.className = "sf-fb-buttons";
-
-        const retry =
-            document.createElement("button");
-
-        retry.textContent = "Try again";
-
-        retry.onclick = () => {
-            this.loadShare(card, share, true);
-        };
-
-        const manual =
-            document.createElement("button");
-
-        manual.textContent = "Enter direct link";
-
-        manual.onclick = () => {
-            if (card.querySelector(".sf-fb-input")) {
-                return;
-            }
-
-            const input =
-                document.createElement("input");
-
-            input.className = "sf-fb-input";
-            input.type = "url";
-
-            input.placeholder =
-                "https://www.facebook.com/reel/123456789/";
-
-            const save =
-                document.createElement("button");
-
-            save.textContent = "Save and play";
-
-            const saveAction = () => {
-                const direct = this.direct(
-                    input.value.trim()
-                );
-
-                if (!direct) {
-                    input.setCustomValidity(
-                        "Enter a direct Facebook Reel, " +
-                        "Watch, or video link."
-                    );
-
-                    input.reportValidity();
-                    return;
-                }
-
-                input.setCustomValidity("");
-
-                this.saved[share] = direct;
-                this.cache.set(share, direct);
-
-                BdApi.Data.save(
-                    "FacebookVideoPlayer",
-                    "resolvedLinks",
-                    this.saved
-                );
-
-                this.showPlayer(card, direct);
+    showManual(card,share) {
+        if (!this.enabled || !card.isConnected) return;
+        this.note(card,'Facebook could not resolve this share link.');
+        const actions=document.createElement('div');actions.className='sf-fb-actions';
+        const retry=document.createElement('button');retry.textContent='Try again';
+        retry.onclick=() => this.load(card,share,true);
+        const manual=document.createElement('button');manual.textContent='Enter direct link';
+        manual.onclick=() => {
+            if (card.querySelector('.sf-fb-input')) return;
+            const input=document.createElement('input');input.className='sf-fb-input';input.type='url';
+            input.placeholder='https://www.facebook.com/reel/123456789/';
+            const save=document.createElement('button');save.textContent='Save and play';
+            const submit=() => {
+                const direct=this.direct(input.value.trim());
+                if (!direct) { input.setCustomValidity('Enter a Facebook Reel or video URL.');input.reportValidity();return; }
+                this.saved[share]=direct;
+                BdApi.Data.save('FacebookVideoPlayer','resolvedLinks',this.saved);
+                this.load(card,direct);
             };
-
-            input.addEventListener(
-                "input",
-                () => input.setCustomValidity("")
-            );
-
-            input.addEventListener(
-                "keydown",
-                event => {
-                    if (event.key === "Enter") {
-                        saveAction();
-                    }
-                }
-            );
-
-            save.onclick = saveAction;
-
-            card.insertBefore(input, buttons);
-            buttons.append(save);
-
-            input.focus();
+            input.addEventListener('input',() => input.setCustomValidity(''));
+            input.addEventListener('keydown',e => {if(e.key==='Enter') submit();});
+            save.onclick=submit;card.insertBefore(input,actions);actions.append(save);input.focus();
         };
-
-        buttons.append(retry, manual);
-        card.append(buttons);
+        actions.append(retry,manual);card.append(actions);
     }
 
-    async loadShare(card, share, retry = false) {
-        this.note(
-            card,
-            "Finding the direct video URL..."
-        );
-
-        const videoUrl = await this.resolve(
-            share,
-            retry
-        );
-
-        if (
-            !this.enabled ||
-            !card.isConnected ||
-            card.dataset.link !== share
-        ) {
-            return;
-        }
-
-        if (videoUrl) {
-            this.showPlayer(card, videoUrl);
-        } else {
-            this.showFallback(card, share);
-        }
+    async load(card,link,retry=false) {
+        const parsed=this.parse(link);
+        if (!parsed || !this.enabled || !card.isConnected) return;
+        this.note(card,'Loading video...');
+        const saved=this.direct(this.saved[link]);
+        const info=await this.fetchInfo(saved || link,retry);
+        if (!this.enabled || !card.isConnected) return;
+        const resolved=info?.direct || saved || this.direct(link);
+        if (!resolved) return this.showManual(card,link);
+        this.setLink(card,resolved);
+        if (info?.source) this.showVideo(card,resolved,info.source);
+        else this.showEmbed(card,resolved);
     }
 };
